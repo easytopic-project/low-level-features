@@ -1,8 +1,6 @@
 import pika
 import time
-from DAO.connection import Connection
 import os
-import multiprocessing
 import json
 import logging
 import ast
@@ -15,6 +13,10 @@ LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
               '-35s %(lineno) -5d: %(message)s')
 LOGGER = logging.getLogger(__name__)
 
+FILES_SERVER = os.environ.get("FILES_SERVER", "localhost:3001") 
+QUEUE_SERVER_HOST, QUEUE_SERVER_PORT = os.environ.get("QUEUE_SERVER", "localhost:5672").split(":")
+Q_IN = os.environ.get("INPUT_QUEUE_NAME", "vad_in")
+Q_OUT = os.environ.get("OUTPUT_QUEUE_NAME", "vad_out")
 
 def callback(channel, method, properties, body, args):
 
@@ -30,20 +32,9 @@ def do_work(connection, channel, delivery_tag, body):
     try:
         print(" [x] Received %r" % body, flush=True)
         args = json.loads(body)
-        oid = args['oid']
-        project_id = args['project_id']
-
-        # conn = Connection()
-        # file = conn.get_file(oid)
-        # file = conn.get_doc_mongo(file_oid=oid)
-
         file = download(args['file'], buffer=True)
-
         result = ast.literal_eval(file.decode('utf-8'))
 
-        timestamps = [0]
-        duration = []
-        pause_duration = []
         count = 0
         dict_result = {}
         previous_duration = 0
@@ -66,27 +57,23 @@ def do_work(connection, channel, delivery_tag, body):
 
         uploaded = upload(payload, buffer=True, mime='text/plain')
 
-        conn = Connection()
-        #  inserts the result of processing in database
-        file_oid = conn.insert_doc_mongo(payload)
-        conn.insert_jobs(type='low_level_features', status='done',
-                         file=file_oid, project_id=project_id)
-
-        message = {'type': 'aggregator', 'status': 'new', 'oid': file_oid,
-                   'project_id': project_id, 'file': uploaded['name'], 'queue': 'low_level_features'}
+        message = {
+                **args,
+                'low-level-output': uploaded
+                }
 
         #  post a message on topic_segmentation queue
         connection_out = pika.BlockingConnection(
-            pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
+            pika.ConnectionParameters(host=QUEUE_SERVER_HOST, port=QUEUE_SERVER_PORT))
         channel2 = connection_out.channel()
 
-        channel2.queue_declare(queue='aggregator', durable=True)
+        channel2.queue_declare(queue=Q_OUT, durable=True)
         channel2.basic_publish(
-            exchange='', routing_key='aggregator', body=json.dumps(message))
+            exchange='', routing_key=Q_OUT, body=json.dumps(message))
 
     except Exception as e:
-        # print(e, flush=True)
         print('Connection Error %s' % e, flush=True)
+
     print(" [x] Done", flush=True)
     cb = functools.partial(ack_message, channel, delivery_tag)
     connection.add_callback_threadsafe(cb)
@@ -104,23 +91,22 @@ def ack_message(channel, delivery_tag):
         pass
 
 
-
 def consume():
     logging.info('[x] start consuming')
     success = False
     while not success:
         try:
             connection = pika.BlockingConnection(
-                pika.ConnectionParameters(host=os.environ['QUEUE_SERVER'], heartbeat=5))
+                pika.ConnectionParameters(host=QUEUE_SERVER_HOST, port=QUEUE_SERVER_PORT, heartbeat=5))
             channel = connection.channel()
             success = True
         except:
             time.sleep(30)
-
             pass
 
-    channel.queue_declare(queue='low_level_features', durable=True)
-    print(' [*] Waiting for messages. To exit press CTRL+C')
+    channel.queue_declare(queue=Q_IN, durable=True)
+    channel.queue_declare(queue=Q_OUT, durable=True)
+    print(' [*] Waiting for messages. To exit press CTRL+C', flush=True)
     channel.basic_qos(prefetch_count=1)
 
     threads = []
@@ -139,20 +125,4 @@ def consume():
 
     connection.close()
 
-
 consume()
-
-'''
-workers = int(os.environ['NUM_WORKERS'])
-pool = multiprocessing.Pool(processes=workers)
-for i in range(0, workers):
-    pool.apply_async(consume)
-
-# Stay alive
-try:
-    while True:
-        continue
-except KeyboardInterrupt:
-    print(' [*] Exiting...')
-    pool.terminate()
-    pool.join()'''
