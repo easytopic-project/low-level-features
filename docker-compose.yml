@@ -7,4 +7,4 @@ services:
       QUEUE_SERVER: "localhost:5672"
       FILES_SERVER: "localhost:3001"
       INPUT_QUEUE_NAME: "low_level_in"
-      OUTPUT_QUEUE_NAME: "low_leve_out"
+      OUTPUT_QUEUE_NAME: "low_level_out"

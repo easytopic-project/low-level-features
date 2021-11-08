@@ -15,8 +15,8 @@ LOGGER = logging.getLogger(__name__)
 
 FILES_SERVER = os.environ.get("FILES_SERVER", "localhost:3001") 
 QUEUE_SERVER_HOST, QUEUE_SERVER_PORT = os.environ.get("QUEUE_SERVER", "localhost:5672").split(":")
-Q_IN = os.environ.get("INPUT_QUEUE_NAME", "vad_in")
-Q_OUT = os.environ.get("OUTPUT_QUEUE_NAME", "vad_out")
+Q_IN = os.environ.get("INPUT_QUEUE_NAME", "low_level_in")
+Q_OUT = os.environ.get("OUTPUT_QUEUE_NAME", "low_level_out")
 
 def callback(channel, method, properties, body, args):
 
@@ -32,7 +32,7 @@ def do_work(connection, channel, delivery_tag, body):
     try:
         print(" [x] Received %r" % body, flush=True)
         args = json.loads(body)
-        file = download(args['file'], buffer=True)
+        file = download(args['file']['name'], url="http://" + FILES_SERVER, buffer=True)
         result = ast.literal_eval(file.decode('utf-8'))
 
         count = 0
@@ -55,14 +55,13 @@ def do_work(connection, channel, delivery_tag, body):
 
         payload = bytes(str(dict_result), encoding='utf-8')
 
-        uploaded = upload(payload, buffer=True, mime='text/plain')
+        uploaded = upload(payload, url="http://" + FILES_SERVER, buffer=True, mime='text/plain')
 
         message = {
                 **args,
                 'low-level-output': uploaded
                 }
 
-        #  post a message on topic_segmentation queue
         connection_out = pika.BlockingConnection(
             pika.ConnectionParameters(host=QUEUE_SERVER_HOST, port=QUEUE_SERVER_PORT))
         channel2 = connection_out.channel()
@@ -112,7 +111,7 @@ def consume():
     threads = []
     on_message_callback = functools.partial(
         callback, args=(connection, threads))
-    channel.basic_consume(queue='low_level_features',
+    channel.basic_consume(queue=Q_IN,
                           on_message_callback=on_message_callback)
     try:
         channel.start_consuming()
